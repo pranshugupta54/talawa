@@ -5,6 +5,8 @@ import 'package:talawa/enums/enums.dart';
 import 'package:talawa/locator.dart';
 import 'package:talawa/models/organization/org_info.dart';
 import 'package:talawa/utils/queries.dart';
+import 'package:talawa/view_model/connectivity_view_model.dart';
+import 'package:talawa/utils/time_conversion.dart';
 
 /// DataBaseMutationFunctions class provides different services that are under the context of graphQL mutations and queries.
 ///
@@ -34,8 +36,10 @@ class DataBaseMutationFunctions {
   /// **returns**:
   ///   None
   void init() {
+    graphqlConfig.getOrgUrl();
     clientNonAuth = graphqlConfig.clientToQuery();
     clientAuth = graphqlConfig.authClient();
+    print('ajkjkdjkjkdjieiejie');
     _query = Queries();
   }
 
@@ -104,10 +108,7 @@ class DataBaseMutationFunctions {
       debugPrint(exception.linkException.toString());
       if (showSnackBar) {
         WidgetsBinding.instance.addPostFrameCallback(
-          (_) => navigationService.showTalawaErrorSnackBar(
-            "Server not running/wrong url",
-            MessageType.info,
-          ),
+          (_) => AppConnectivity.showSnackbar(isOnline: false),
         );
       }
       return false;
@@ -224,26 +225,27 @@ class DataBaseMutationFunctions {
   ///
   /// **returns**:
   /// * `Future<dynamic>`: it returns Future of dynamic
-  Future<dynamic> gqlAuthQuery(
-    String query, {
-    Map<String, dynamic>? variables,
-  }) async {
-    final QueryOptions options = QueryOptions(
-      document: gql(query),
-      variables: variables ?? <String, dynamic>{},
-    );
-    final QueryResult result = await clientAuth.query(options);
-    // if there is an error or exception in [result]
-    if (result.hasException) {
-      final exception = encounteredExceptionOrError(result.exception!);
-      if (exception!) {
-        gqlAuthQuery(query, variables: variables);
-      }
-    } else if (result.data != null && result.isConcrete) {
-      return result;
+Future<dynamic> gqlAuthQuery(
+  String query, {
+  Map<String, dynamic>? variables,
+}) async {
+  final QueryOptions options = QueryOptions(
+    document: gql(query),
+    variables: variables ?? <String, dynamic>{},
+  );
+  final QueryResult result = await clientAuth.query(options);
+  if (result.hasException) {
+    final exception = encounteredExceptionOrError(result.exception!);
+    if (exception!) {
+      return gqlAuthQuery(query, variables: variables);
     }
-    return null;
+  } else if (result.data != null && result.isConcrete) {
+    // Process and convert UTC time fields in the result data to local time
+    traverseAndConvertDates(result.data as Map<String, dynamic>, convertUTCToLocal, splitDateTime);
+    return result;
   }
+  return null;
+}
 
   /// This function is used to run the graph-ql mutation for authenticated user.
   ///
@@ -253,27 +255,31 @@ class DataBaseMutationFunctions {
   ///
   /// **returns**:
   /// * `Future<dynamic>`: it returns Future of dynamic
-  Future<dynamic> gqlAuthMutation(
-    String mutation, {
-    Map<String, dynamic>? variables,
-  }) async {
-    final QueryResult result = await clientAuth.mutate(
-      MutationOptions(
-        document: gql(mutation),
-        variables: variables ?? <String, dynamic>{},
-      ),
-    );
-    // If there is an error or exception in [result]
-    if (result.hasException) {
-      final exception = encounteredExceptionOrError(result.exception!);
-      if (exception!) {
-        gqlAuthMutation(mutation, variables: variables);
-      }
-    } else if (result.data != null && result.isConcrete) {
-      return result;
-    }
-    return null;
+   Future<dynamic> gqlAuthMutation(
+  String mutation, {
+  Map<String, dynamic>? variables,
+}) async {
+  // Convert local time in variables to UTC
+  if (variables != null) {
+    traverseAndConvertDates(variables, convertLocalToUTC, splitDateTime);
   }
+
+  final QueryResult result = await clientAuth.mutate(
+    MutationOptions(
+      document: gql(mutation),
+      variables: variables ?? <String, dynamic>{},
+    ),
+  );
+  if (result.hasException) {
+    final exception = encounteredExceptionOrError(result.exception!);
+    if (exception!) {
+      return gqlAuthMutation(mutation, variables: variables);
+    } 
+  } else if (result.data != null && result.isConcrete) {
+    return result;
+  }
+  return null;
+}
 
   /// This function is used to run the graph-ql mutation to authenticate the non signed-in user.
   ///
@@ -285,28 +291,33 @@ class DataBaseMutationFunctions {
   ///
   /// **returns**:
   /// * `Future<dynamic>`: it returns Future of dynamic
-  Future<dynamic> gqlNonAuthMutation(
-    String mutation, {
-    Map<String, dynamic>? variables,
-    bool reCall = true,
-  }) async {
-    final QueryResult result = await clientNonAuth.mutate(
-      MutationOptions(
-        document: gql(mutation),
-        variables: variables ?? <String, dynamic>{},
-      ),
-    );
-    // if there is an error or exception in [result]
-    if (result.hasException) {
-      final exception = encounteredExceptionOrError(result.exception!);
-      if (exception! && reCall) {
-        gqlNonAuthMutation(mutation, variables: variables);
-      }
-    } else if (result.data != null && result.isConcrete) {
-      return result;
-    }
-    return null;
+Future<dynamic> gqlNonAuthMutation(
+  String mutation, {
+  Map<String, dynamic>? variables,
+  bool reCall = true,
+}) async {
+  // Convert local time in variables to UTC
+  if (variables != null) {
+    traverseAndConvertDates(variables, convertLocalToUTC, splitDateTime);
   }
+
+  final QueryResult result = await clientNonAuth.mutate(
+    MutationOptions(
+      document: gql(mutation),
+      variables: variables ?? <String, dynamic>{},
+    ),
+  );
+  if (result.hasException) {
+    final exception = encounteredExceptionOrError(result.exception!);
+    if (exception! && reCall) {
+      return gqlNonAuthMutation(mutation, variables: variables);
+    }
+  } else if (result.data != null && result.isConcrete) {
+    return result;
+  }
+  return null;
+}
+
 
   /// This function is used to run the graph-ql query for the non signed-in user.
   ///
@@ -317,26 +328,28 @@ class DataBaseMutationFunctions {
   /// **returns**:
   /// * `Future<QueryResult<Object?>?>`: it returns Future of QueryResult, contains all data
   Future<QueryResult<Object?>?> gqlNonAuthQuery(
-    String query, {
-    Map<String, dynamic>? variables,
-  }) async {
-    final queryOptions = QueryOptions(
-      document: gql(query),
-      variables: variables ?? <String, dynamic>{},
-    );
-    final result = await clientNonAuth.query(queryOptions);
-    QueryResult? finalRes;
-    // if there is an error or exception in [result]
-    if (result.hasException) {
-      final exception = encounteredExceptionOrError(result.exception!);
-      if (exception!) {
-        finalRes = await gqlNonAuthQuery(query, variables: variables);
-      }
-    } else if (result.data != null && result.isConcrete) {
-      return result;
+  String query, {
+  Map<String, dynamic>? variables,
+}) async {
+  final queryOptions = QueryOptions(
+    document: gql(query),
+    variables: variables ?? <String, dynamic>{},
+  );
+  final result = await clientNonAuth.query(queryOptions);
+  QueryResult? finalRes;
+  if (result.hasException) {
+    final exception = encounteredExceptionOrError(result.exception!);
+    if (exception!) {
+      finalRes = await gqlNonAuthQuery(query, variables: variables);
     }
-    return finalRes;
+  } else if (result.data != null && result.isConcrete) {
+    // Process and convert UTC time fields in the result data to local time
+    traverseAndConvertDates(result.data as Map<String, dynamic>, convertUTCToLocal, splitDateTime);
+    return result;
   }
+  return finalRes;
+}
+
 
   /// This function is used to refresh the Authenication token to access the application.
   ///
